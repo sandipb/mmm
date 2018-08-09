@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/akamensky/argparse"
@@ -50,6 +52,52 @@ func validateDir(path string) {
 	}
 }
 
+// WorkData info
+type WorkData struct {
+	src string
+	dst string
+}
+
+func workFiles(src string, mimeMap map[string]string) chan WorkData {
+	wd := make(chan WorkData)
+	go func() {
+		for fpath := range fileList(src) {
+			mimeType := mime.TypeByExtension(filepath.Ext(fpath))
+			if mimeType == "" {
+				//printError("No type for '%s' found", f.path)
+				continue
+			}
+			mimeTypeMajor := mimeType[:strings.IndexByte(mimeType, '/')]
+			if d, ok := mimeMap[mimeTypeMajor]; ok {
+				relPath, err := filepath.Rel(src, fpath)
+				if err != nil {
+					printError("Error finding relpath of %s: %v", fpath, err)
+					continue
+				}
+
+				wd <- WorkData{src: fpath, dst: filepath.Join(d, relPath)}
+			}
+
+		}
+		close(wd)
+	}()
+	return wd
+}
+
+func fileList(src string) chan string {
+	fChan := make(chan string)
+	go func() {
+		filepath.Walk(src, func(path string, fi os.FileInfo, err error) error {
+			if err == nil && !fi.IsDir() {
+				fChan <- path
+			}
+			return nil
+		})
+		close(fChan)
+	}()
+	return fChan
+}
+
 func main() {
 
 	parser := argparse.NewParser("mmm", "Distributes file based on mime type")
@@ -91,5 +139,11 @@ func main() {
 	printInfo("Will read files from directories: %v", *sources)
 	for t, d := range mimeMap {
 		printInfo("... and copy files of type %s/* to: %s", t, d)
+	}
+
+	for _, source := range *sources {
+		for w := range workFiles(source, mimeMap) {
+			fmt.Println(w.src, "->", w.dst)
+		}
 	}
 }
